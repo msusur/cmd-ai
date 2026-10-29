@@ -68,9 +68,16 @@ function startSpinner(text) {
 
 function showProposal(action, step, maxSteps) {
   if (maxSteps > 1) stderr.write(`${label("Step")} ${step}/${maxSteps}\n`);
-  stderr.write(`${label("Plan")} ${action.message || "Run the proposed command."}\n`);
+  showPublicPlan(action.plan);
+  stderr.write(`${label("Decision")} ${action.message || "Run the proposed command."}\n`);
   stderr.write(`${label("Impact")} ${action.impact}\n`);
   stderr.write(`\n${paint("1", "$")} ${action.command}\n`);
+}
+
+function showPublicPlan(steps) {
+  if (!steps?.length) return;
+  stderr.write(`${label("Plan")} ${steps[0]}\n`);
+  for (const step of steps.slice(1)) stderr.write(`${"".padEnd(9)} ${step}\n`);
 }
 
 export function parseArgs(argv) {
@@ -134,6 +141,7 @@ async function main() {
     }
 
     if (action.action === "done") {
+      showPublicPlan(action.plan);
       stderr.write(`${paint("32", "✓")} Done\n`);
       console.log(action.message || "Done.");
       return;

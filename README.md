@@ -16,9 +16,9 @@ shell action, and runs it. A shell action can contain a pipeline or several
 commands, keeping the usual path to one fast local-model call.
 
 While it works, the terminal shows the current phase, elapsed planning time, a
-short decision rationale, expected command impact, the exact command, approval
-decision, and its exit status. It intentionally does not expose raw model
-chain-of-thought.
+bounded 1–4 step public planning trace, a short decision rationale, expected
+command impact, the exact command, permission decision, and its exit status. It
+does not expose raw hidden chain-of-thought or system instructions.
 
 For project questions, the CLI supplies a verified top-level inventory and
 bounded excerpts from standard metadata such as `README.md` and `package.json`.

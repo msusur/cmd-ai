@@ -7,24 +7,61 @@ import {
   ACTION_SCHEMA,
   appendTranscript,
   buildProjectContext,
+  buildSystemPrompt,
   classifyCommandImpact,
+  extractUserPaths,
+  normalizePublicPlan,
   parseModelJson,
   trimEnd,
   trimStart,
   validateAction,
 } from "../src/agent.js";
 
+test("builds a runtime-aware system prompt for the active folder", () => {
+  const prompt = buildSystemPrompt({ cwd: "/tmp/example workspace" });
+  assert.match(prompt, /Working directory: "\/tmp\/example workspace"/);
+  assert.match(prompt, /Every command starts in the working directory above/);
+  assert.match(prompt, /Preserve every path supplied by the user exactly/);
+  assert.match(prompt, /~\/\.cmd-ai\/config/);
+  assert.doesNotMatch(prompt, /~\/cmd-helper\/config\.yml/);
+});
+
+test("keeps user prompt extensions subordinate to runtime and permission rules", () => {
+  const prompt = buildSystemPrompt({ cwd: "/tmp/project", extensionPrompt: "Prefer JSON output." });
+  assert.match(prompt, /# User extensions/);
+  assert.match(prompt, /Prefer JSON output\./);
+  assert.ok(prompt.indexOf("# Runtime") < prompt.indexOf("# User extensions"));
+  assert.match(prompt, /external permission policy/);
+});
+
+test("extracts exact absolute and home-relative paths from the task", () => {
+  assert.deepEqual(
+    extractUserPaths("read /Users/me/project/config.example.yml, then write ~/.cmd-ai/config"),
+    ["/Users/me/project/config.example.yml", "~/.cmd-ai/config"],
+  );
+});
+
 test("structured actions prefer answering from evidence before running a command", () => {
   assert.deepEqual(ACTION_SCHEMA.properties.action.enum, ["done", "run"]);
 });
 
 test("validates run actions", () => {
-  assert.deepEqual(validateAction({ action: "run", command: "  pwd  ", message: "look" }), {
+  assert.deepEqual(validateAction({ action: "run", command: "  pwd  ", message: "look", plan: "Inspect the folder\nReport the path" }), {
     action: "run",
     command: "pwd",
     message: "look",
+    plan: ["Inspect the folder", "Report the path"],
     impact: "read-only",
   });
+});
+
+test("bounds and cleans the public planning trace", () => {
+  assert.deepEqual(normalizePublicPlan("1. Inspect files\n- Choose a command\n3) Check policy\nRun it\nIgnore extra"), [
+    "Inspect files",
+    "Choose a command",
+    "Check policy",
+    "Run it",
+  ]);
 });
 
 test("classifies command impact conservatively", () => {
@@ -46,6 +83,26 @@ test("rejects an empty command", () => {
 test("repairs a shell backslash in prompt-generated JSON", () => {
   const action = parseModelJson('{"action":"run","command":"find . -exec echo {} \\;","message":""}');
   assert.equal(action.command, "find . -exec echo {} \\;");
+});
+
+test("accepts Apple Intelligence key-value fallback output", () => {
+  const action = parseModelJson('action=run\ncommand="ls"\nmessage="Inspect files"\nplan="List entries\\nReport findings"');
+  assert.deepEqual(action, {
+    action: "run",
+    command: "ls",
+    message: "Inspect files",
+    plan: "List entries\nReport findings",
+  });
+});
+
+test("accepts loose key-value output when Apple omits the public plan", () => {
+  const action = parseModelJson("- Action: run\n- Command: cat /tmp/example.yml\n- Message: Read the example");
+  assert.deepEqual(action, {
+    action: "run",
+    command: "cat /tmp/example.yml",
+    message: "Read the example",
+    plan: "Read the example",
+  });
 });
 
 test("truncates context from the beginning", () => {
