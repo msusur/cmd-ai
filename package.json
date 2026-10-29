@@ -1,0 +1,24 @@
+{
+  "name": "cmd-ai",
+  "version": "0.2.0",
+  "description": "A small command-line agent powered by Apple Intelligence on your Mac",
+  "type": "module",
+  "bin": {
+    "cmd-ai": "./src/cli.js",
+    "ai-cmd": "./src/cli.js"
+  },
+  "scripts": {
+    "check": "node ./src/cli.js --check",
+    "bootstrap": "node ./src/cli.js --setup",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@dangayle/applepi": "0.2.1",
+    "yaml": "2.8.1"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "packageManager": "pnpm@10.12.4",
+  "license": "MIT"
+}

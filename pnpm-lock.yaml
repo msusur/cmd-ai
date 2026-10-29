@@ -1,0 +1,36 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@dangayle/applepi':
+        specifier: 0.2.1
+        version: 0.2.1
+      yaml:
+        specifier: 2.8.1
+        version: 2.8.1
+
+packages:
+
+  '@dangayle/applepi@0.2.1':
+    resolution: {integrity: sha512-w2V7kPi7BEndi8RPw77B/GG3L9gki53IaZqHRCr3T7hq9Rqjqaeagq31lUi17Pv6M7l1xcMY3GOKz+g0wj5yGA==}
+    peerDependencies:
+      '@earendil-works/pi-ai': '*'
+      '@earendil-works/pi-coding-agent': '*'
+      typebox: '*'
+
+  yaml@2.8.1:
+    resolution: {integrity: sha512-lcYcMxX2PO9XMGvAJkJ3OsNMw+/7FKes7/hgerGUYWIoWu5j/+YQqcZr5JnPZWzOsEBgMbSbiSTn/dv/69Mkpw==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
+snapshots:
+
+  '@dangayle/applepi@0.2.1': {}
+
+  yaml@2.8.1: {}

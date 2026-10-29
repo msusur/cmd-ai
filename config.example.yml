@@ -1,0 +1,17 @@
+# Copy this file to ~/.cmd-ai/config.
+permissions:
+  # readonly automatically runs commands classified as read-only and blocks
+  # everything else. dangerous allows everything not matched by deny.
+  mode: readonly
+
+  # Patterns match the entire generated command. deny always wins.
+  allow:
+    - "git status*"
+  deny:
+    - "rm *"
+    - "sudo *"
+
+# These instructions are appended to cmd-ai's built-in system prompt.
+prompt: |
+  Keep answers concise.
+  Prefer rg over grep when both are available.
