@@ -5,12 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ACTION_SCHEMA,
+  BUILTIN_RUNTIME_TOOLS,
   appendTranscript,
   buildProjectContext,
   buildSystemPrompt,
   classifyCommandImpact,
   extractUserPaths,
   normalizePublicPlan,
+  normalizeModelUsage,
   parseModelJson,
   trimEnd,
   trimStart,
@@ -24,6 +26,9 @@ test("builds a runtime-aware system prompt for the active folder", () => {
   assert.match(prompt, /Preserve every path supplied by the user exactly/);
   assert.match(prompt, /~\/\.cmd-ai\/config/);
   assert.doesNotMatch(prompt, /~\/cmd-helper\/config\.yml/);
+  assert.match(prompt, /git \(\/usr\/bin\/git\)/);
+  assert.match(prompt, /curl \(\/usr\/bin\/curl\)/);
+  assert.deepEqual(BUILTIN_RUNTIME_TOOLS.map((tool) => tool.name), ["git", "curl"]);
 });
 
 test("keeps user prompt extensions subordinate to runtime and permission rules", () => {
@@ -43,6 +48,16 @@ test("extracts exact absolute and home-relative paths from the task", () => {
 
 test("structured actions prefer answering from evidence before running a command", () => {
   assert.deepEqual(ACTION_SCHEMA.properties.action.enum, ["done", "run"]);
+});
+
+test("normalizes usage metadata from the Apple bridge", () => {
+  assert.deepEqual(normalizeModelUsage({ prompt_tokens: 1200, completion_tokens: 34, context_size: 4096, truncated: true, finish_reason: "length" }), {
+    inputTokens: 1200,
+    outputTokens: 34,
+    contextWindow: 4096,
+    truncated: true,
+    finishReason: "length",
+  });
 });
 
 test("validates run actions", () => {
@@ -74,6 +89,13 @@ test("classifies command impact conservatively", () => {
   assert.equal(classifyCommandImpact("find . -type f -exec rm {} \\;"), "writes-files");
   assert.equal(classifyCommandImpact("sudo launchctl kickstart system/foo"), "system-change");
   assert.equal(classifyCommandImpact("node unknown-script.js"), "writes-files");
+  assert.equal(classifyCommandImpact("git status --short"), "read-only");
+  assert.equal(classifyCommandImpact("git rev-parse --show-toplevel"), "read-only");
+  assert.equal(classifyCommandImpact("git branch feature"), "writes-files");
+  assert.equal(classifyCommandImpact("git push origin main"), "writes-files");
+  assert.equal(classifyCommandImpact("curl -fsSL https://example.com"), "read-only");
+  assert.equal(classifyCommandImpact("curl -fsSL -o result.json https://example.com"), "writes-files");
+  assert.equal(classifyCommandImpact("curl -X POST https://example.com"), "writes-files");
 });
 
 test("rejects an empty command", () => {

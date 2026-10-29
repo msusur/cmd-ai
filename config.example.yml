@@ -1,7 +1,7 @@
 # Copy this file to ~/.cmd-ai/config.
 permissions:
-  # readonly automatically runs commands classified as read-only and blocks
-  # everything else. dangerous allows everything not matched by deny.
+  # readonly automatically runs read-only commands and asks before changes.
+  # dangerous allows everything not matched by deny.
   mode: readonly
 
   # Patterns match the entire generated command. deny always wins.
@@ -10,6 +10,12 @@ permissions:
   deny:
     - "rm *"
     - "sudo *"
+
+status:
+  # Show per-step input/output tokens and context-window utilization.
+  show_model_usage: false
+  # Show runtime, prompt-size, response-format, and result diagnostics.
+  verbose: false
 
 # These instructions are appended to cmd-ai's built-in system prompt.
 prompt: |

@@ -12,7 +12,7 @@ test("loads YAML config, tools, and skills", async () => {
     await mkdir(join(folder, "skills"));
     await writeFile(
       join(folder, "config"),
-      "permissions:\n  mode: dangerous\n  allow: ['git *']\n  deny: ['rm *']\nprompt: Answer briefly.\n",
+      "permissions:\n  mode: dangerous\n  allow: ['git *']\n  deny: ['rm *']\nstatus:\n  show_model_usage: true\n  verbose: true\nprompt: Answer briefly.\n",
     );
     await writeFile(join(folder, "tools", "summary.yml"), "name: summary\ndescription: Summarize text\n");
     await writeFile(join(folder, "skills", "review.md"), "# Review\nUse the summary tool.\n");
@@ -20,10 +20,23 @@ test("loads YAML config, tools, and skills", async () => {
     const settings = await loadConfig(folder);
     assert.equal(settings.permissions.mode, "dangerous");
     assert.deepEqual(settings.permissions.deny, ["rm *"]);
+    assert.equal(settings.status.showModelUsage, true);
+    assert.equal(settings.status.verbose, true);
     assert.equal(settings.tools.length, 1);
     assert.equal(settings.skills.length, 1);
     assert.match(buildExtensionPrompt(settings), /Answer briefly/);
     assert.match(buildExtensionPrompt(settings), /Use the summary tool/);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test("model usage status is disabled by default", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "cmd-ai-config-default-"));
+  try {
+    const settings = await loadConfig(folder);
+    assert.equal(settings.status.showModelUsage, false);
+    assert.equal(settings.status.verbose, false);
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
@@ -34,7 +47,9 @@ test("permission precedence is deny, allow, override, mode, then readonly defaul
   assert.equal(evaluatePermission("ls", "read-only", readonly).allowed, true);
   assert.equal(evaluatePermission("mkdir safe-folder", "writes-files", readonly).allowed, true);
   assert.equal(evaluatePermission("touch file", "writes-files", readonly).allowed, false);
+  assert.equal(evaluatePermission("touch file", "writes-files", readonly).requiresConfirmation, true);
   assert.equal(evaluatePermission("rm file", "writes-files", readonly, true).allowed, false);
+  assert.equal(evaluatePermission("rm file", "writes-files", readonly, true).requiresConfirmation, false);
   assert.equal(evaluatePermission("touch file", "writes-files", readonly, true).allowed, true);
 
   const dangerous = { mode: "dangerous", allow: [], deny: ["rm *"] };

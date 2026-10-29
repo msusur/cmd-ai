@@ -51,8 +51,8 @@ cmd-ai "find exact duplicate files"
 ```
 
 Commands are printed before execution. Read-only commands are automatically
-allowed by default; changing commands are blocked. Use `--yes` as a one-run
-override only when you trust the request and folder:
+allowed by default; changing commands ask for Y/N confirmation. Use `--yes` to
+skip those prompts for one run only when you trust the request and folder:
 
 ```sh
 cmd-ai --yes "create a sorted list of every PDF in files.txt"
@@ -73,12 +73,27 @@ cmd-ai --max-steps 4 "inspect this project and fix its failing test"
 
 Run `cmd-ai --help` for all options.
 
+## Built-in runtime tools
+
+The system prompt advertises two first-class command tools available on macOS:
+
+- `git` for repository inspection and explicitly requested version-control work.
+  Status, logs, diffs, and other inspections run as read-only; repository changes
+  require permission.
+- `curl` for HTTP(S) retrieval and API calls. GET/HEAD responses written to the
+  terminal are read-only; downloads, uploads, request bodies, and mutating methods
+  require permission.
+
+These are shell-backed capabilities rather than native Apple Intelligence tool
+calls, so every proposed command still passes through the normal permission UI.
+
 ## Configuration and permissions
 
 On every run, `cmd-ai` checks `~/.cmd-ai/config`, then `config.yml` or
 `config.yaml`. The file is YAML. With no file, the built-in `readonly` policy is
 used: read-only commands run automatically and commands expected to make changes
-are blocked.
+require confirmation. Commands matched by `deny` remain blocked and cannot be
+approved interactively.
 
 ```yaml
 permissions:
@@ -93,6 +108,12 @@ permissions:
     - "rm *"
     - "sudo *"
 
+status:
+  # Disabled by default. Shows model tokens and context use after each plan.
+  show_model_usage: false
+  # Disabled by default. Shows runtime and prompt/result diagnostics.
+  verbose: false
+
 # Appended to the built-in system prompt.
 prompt: |
   Keep answers terse.
@@ -103,6 +124,22 @@ Permission order is: `deny` → `allow` → one-run `--yes`/`--dangerous` overri
 mode → read-only default. `dangerous` mode automatically allows any command not
 matched by `deny`; use it carefully. All commands still run with your user
 permissions and are not sandboxed.
+
+Set `status.show_model_usage` to `true` to display Apple bridge usage metadata
+after every planning step:
+
+```text
+Tokens    1,200 input + 34 output · 1,234/4,096 context (30%) · stop
+```
+
+The bridge may report zero output tokens for some structured responses; cmd-ai
+shows the values as received rather than estimating them.
+
+Set `status.verbose` to `true` for additional operational details: active shell
+and built-in tools, command limit, system/task prompt sizes, project-context and
+transcript sizes, structured-versus-fallback response format, and captured
+command-output size. Verbose mode never prints the system prompt or private
+model reasoning.
 
 ## User tools and skills
 
@@ -154,5 +191,5 @@ uses the same package's bridge directly for structured action generation.
 
 The generated commands run with your normal user permissions and are not
 sandboxed. Review the displayed command and permission decision. Keep readonly
-mode for unfamiliar folders or tasks, and back up important data before bulk
-edits.
+mode for unfamiliar folders or tasks, answer confirmation prompts carefully,
+and back up important data before bulk edits.

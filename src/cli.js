@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
-import { stdout, stderr } from "node:process";
+import { stdin, stdout, stderr } from "node:process";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import {
   appendTranscript,
   askModel,
+  BUILTIN_RUNTIME_TOOLS,
   checkAppleIntelligence,
   ensureBridge,
   runCommand,
@@ -28,20 +30,23 @@ Options:
   -h, --help         Show this help
 
 The agent always operates in the directory from which you invoke cmd-ai.
-Default policy runs read-only commands and blocks changes. Configure ~/.cmd-ai/config.`;
+Default policy runs read-only commands and asks before changes. Configure ~/.cmd-ai/config.`;
 
 const colorEnabled = Boolean(stderr.isTTY && !process.env.NO_COLOR);
 const paint = (code, text) => (colorEnabled ? `\x1b[${code}m${text}\x1b[0m` : text);
 const label = (text) => paint("2", text.padEnd(9));
 const formatSeconds = (startedAt) => `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 
-function showRunHeader(prompt, cwd, settings) {
+function showRunHeader(prompt, cwd, settings, maxSteps) {
   stderr.write(`${paint("1;36", "cmd-ai")} ${paint("2", "· Apple Intelligence · on-device")}\n`);
   stderr.write(`${label("Task")} ${prompt}\n`);
   stderr.write(`${label("Folder")} ${cwd}\n`);
   stderr.write(`${label("Policy")} ${settings.permissions.mode} · ${settings.configPath ?? "built-in defaults"}\n`);
   if (settings.tools.length || settings.skills.length) {
     stderr.write(`${label("Loaded")} ${settings.tools.length} tool(s) · ${settings.skills.length} skill(s)\n`);
+  }
+  if (settings.status.verbose) {
+    stderr.write(`${label("Runtime")} /bin/zsh · ${maxSteps} command limit · ${BUILTIN_RUNTIME_TOOLS.map((tool) => tool.name).join(", ")}\n`);
   }
   stderr.write("\n");
 }
@@ -80,6 +85,41 @@ function showPublicPlan(steps) {
   for (const step of steps.slice(1)) stderr.write(`${"".padEnd(9)} ${step}\n`);
 }
 
+export function formatModelUsage(usage) {
+  if (!usage) return null;
+  const format = (value) => value.toLocaleString("en-US");
+  const input = usage.inputTokens;
+  const output = usage.outputTokens;
+  const used = input !== null && output !== null ? input + output : null;
+  const parts = [];
+  if (input !== null) parts.push(`${format(input)} input`);
+  if (output !== null) parts.push(`${format(output)} output`);
+  let text = parts.join(" + ") || "usage unavailable";
+  if (usage.contextWindow !== null) {
+    const consumption = used === null ? `window ${format(usage.contextWindow)}` : `${format(used)}/${format(usage.contextWindow)} context`;
+    const percent = used === null || usage.contextWindow === 0 ? "" : ` (${Math.round((used / usage.contextWindow) * 100)}%)`;
+    text += ` · ${consumption}${percent}`;
+  }
+  if (usage.truncated) text += " · truncated";
+  if (usage.finishReason) text += ` · ${usage.finishReason}`;
+  return text;
+}
+
+function showModelUsage(usage) {
+  const summary = formatModelUsage(usage);
+  if (summary) stderr.write(`${label("Tokens")} ${summary}\n`);
+}
+
+export function formatVerboseDiagnostics(diagnostics) {
+  if (!diagnostics) return null;
+  return `${diagnostics.systemPromptChars.toLocaleString("en-US")} system + ${diagnostics.taskPromptChars.toLocaleString("en-US")} task chars · ${diagnostics.projectContextChars.toLocaleString("en-US")} project context · ${diagnostics.transcriptChars.toLocaleString("en-US")} transcript · ${diagnostics.responseFormat}`;
+}
+
+function showVerboseDiagnostics(diagnostics) {
+  const summary = formatVerboseDiagnostics(diagnostics);
+  if (summary) stderr.write(`${label("Details")} ${summary}\n`);
+}
+
 export function parseArgs(argv) {
   const options = { yes: false, dryRun: false, maxSteps: 1, check: false, setup: false, help: false };
   const prompt = [];
@@ -102,6 +142,20 @@ export function parseArgs(argv) {
   }
 
   return { ...options, prompt: prompt.join(" ").trim() };
+}
+
+export function isAffirmative(answer) {
+  return /^(?:y|yes)$/i.test(answer.trim());
+}
+
+async function confirmCommand() {
+  if (!stdin.isTTY) return null;
+  const prompt = createInterface({ input: stdin, output: stderr });
+  try {
+    return isAffirmative(await prompt.question("Run this command? [y/N] "));
+  } finally {
+    prompt.close();
+  }
 }
 
 async function main() {
@@ -128,7 +182,7 @@ async function main() {
   const bridge = await ensureBridge();
   let transcript = "";
   const seenCommands = new Set();
-  showRunHeader(args.prompt, cwd, settings);
+  showRunHeader(args.prompt, cwd, settings, args.maxSteps);
 
   for (let step = 1; step <= args.maxSteps; step += 1) {
     const planningLabel = args.maxSteps > 1 ? `Planning step ${step}/${args.maxSteps} locally` : "Planning locally";
@@ -140,6 +194,9 @@ async function main() {
       stopSpinner();
     }
 
+    if (settings.status.showModelUsage) showModelUsage(action.modelUsage);
+    if (settings.status.verbose) showVerboseDiagnostics(action.diagnostics);
+
     if (action.action === "done") {
       showPublicPlan(action.plan);
       stderr.write(`${paint("32", "✓")} Done\n`);
@@ -148,8 +205,12 @@ async function main() {
     }
 
     showProposal(action, step, args.maxSteps);
-    const permission = evaluatePermission(action.command, action.impact, settings.permissions, args.yes);
-    const permissionWord = permission.allowed ? paint("32", "allowed") : paint("31", "blocked");
+    let permission = evaluatePermission(action.command, action.impact, settings.permissions, args.yes);
+    const permissionWord = permission.allowed
+      ? paint("32", "allowed")
+      : permission.requiresConfirmation
+        ? paint("33", "required")
+        : paint("31", "blocked");
     stderr.write(`${label("Permission")} ${permissionWord} · ${permission.reason}\n`);
     if (args.dryRun) {
       stderr.write(`${label("Status")} Dry run; nothing executed.\n`);
@@ -159,6 +220,21 @@ async function main() {
     if (seenCommands.has(action.command)) {
       process.stderr.write("Stopped because the model proposed the same command twice.\n");
       return;
+    }
+
+    if (!permission.allowed && permission.requiresConfirmation) {
+      const confirmed = await confirmCommand();
+      if (confirmed === null) {
+        stderr.write(`${label("Status")} Confirmation requires an interactive terminal; command was not executed.\n`);
+        process.exitCode = 2;
+        return;
+      }
+      if (!confirmed) {
+        stderr.write(`${label("Status")} Declined; command was not executed.\n`);
+        return;
+      }
+      permission = { allowed: true, requiresConfirmation: false, reason: "approved interactively" };
+      stderr.write(`${label("Permission")} ${paint("32", "allowed")} · ${permission.reason}\n`);
     }
 
     if (!permission.allowed) {
@@ -182,6 +258,9 @@ async function main() {
     stderr.write(`${statusIcon} Finished · exit ${result.code} · ${formatSeconds(startedAt)}\n`);
     seenCommands.add(action.command);
     transcript = appendTranscript(transcript, action.command, result);
+    if (settings.status.verbose) {
+      stderr.write(`${label("Result")} ${result.output.length.toLocaleString("en-US")} captured chars · ${transcript.length.toLocaleString("en-US")} transcript chars\n`);
+    }
     if (step === args.maxSteps) {
       if (result.code !== 0) throw new Error(`Command exited with status ${result.code}.`);
       return;

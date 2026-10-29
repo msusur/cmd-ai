@@ -67,6 +67,19 @@ export async function loadConfig(baseDirectory = process.env.CMD_AI_HOME || join
     throw new Error('permissions.mode must be "readonly" or "dangerous".');
   }
 
+  const statusConfig = raw.status ?? {};
+  if (typeof statusConfig !== "object" || Array.isArray(statusConfig)) {
+    throw new Error("status must be a YAML mapping.");
+  }
+  const showModelUsage = statusConfig.show_model_usage ?? false;
+  if (typeof showModelUsage !== "boolean") {
+    throw new Error("status.show_model_usage must be true or false.");
+  }
+  const verbose = statusConfig.verbose ?? false;
+  if (typeof verbose !== "boolean") {
+    throw new Error("status.verbose must be true or false.");
+  }
+
   const prompt = raw.prompt ?? raw.system_prompt ?? "";
   if (typeof prompt !== "string") throw new Error("prompt must be a string.");
 
@@ -84,6 +97,7 @@ export async function loadConfig(baseDirectory = process.env.CMD_AI_HOME || join
       allow: stringList(permissionConfig.allow, "permissions.allow"),
       deny: stringList(permissionConfig.deny, "permissions.deny"),
     },
+    status: { showModelUsage, verbose },
     tools,
     skills,
   };
@@ -112,12 +126,12 @@ export function matchesCommandPattern(command, pattern) {
 
 export function evaluatePermission(command, impact, permissions, oneRunDangerous = false) {
   const deniedBy = permissions.deny.find((pattern) => matchesCommandPattern(command, pattern));
-  if (deniedBy) return { allowed: false, reason: `denied by pattern: ${deniedBy}` };
+  if (deniedBy) return { allowed: false, requiresConfirmation: false, reason: `denied by pattern: ${deniedBy}` };
 
   const allowedBy = permissions.allow.find((pattern) => matchesCommandPattern(command, pattern));
-  if (allowedBy) return { allowed: true, reason: `allowed by pattern: ${allowedBy}` };
-  if (oneRunDangerous) return { allowed: true, reason: "one-run dangerous override (--yes)" };
-  if (permissions.mode === "dangerous") return { allowed: true, reason: "dangerous mode" };
-  if (impact === "read-only") return { allowed: true, reason: "read-only default" };
-  return { allowed: false, reason: `${impact} commands are blocked in readonly mode` };
+  if (allowedBy) return { allowed: true, requiresConfirmation: false, reason: `allowed by pattern: ${allowedBy}` };
+  if (oneRunDangerous) return { allowed: true, requiresConfirmation: false, reason: "one-run dangerous override (--yes)" };
+  if (permissions.mode === "dangerous") return { allowed: true, requiresConfirmation: false, reason: "dangerous mode" };
+  if (impact === "read-only") return { allowed: true, requiresConfirmation: false, reason: "read-only default" };
+  return { allowed: false, requiresConfirmation: true, reason: `${impact} command requires confirmation in readonly mode` };
 }

@@ -19,6 +19,11 @@ const PROJECT_CONTEXT_FILES = [
   "Gemfile",
 ];
 
+export const BUILTIN_RUNTIME_TOOLS = [
+  { name: "git", command: "/usr/bin/git", purpose: "Inspect repositories and perform explicitly requested version-control operations." },
+  { name: "curl", command: "/usr/bin/curl", purpose: "Retrieve HTTP(S) resources and call explicitly requested web endpoints." },
+];
+
 export const ACTION_SCHEMA = {
   type: "object",
   properties: {
@@ -44,6 +49,7 @@ export function buildSystemPrompt({ cwd, extensionPrompt = "" }) {
     platform: "macOS",
     date: new Date().toISOString().slice(0, 10),
     config: "~/.cmd-ai/config",
+    tools: BUILTIN_RUNTIME_TOOLS,
   };
 
   const basePrompt = `# Identity
@@ -57,6 +63,11 @@ You are cmd-ai, a fast on-device macOS command-line operator. Complete the user'
 - User configuration: ${runtime.config}
 - Every command starts in the working directory above. Shell state and a standalone cd do not persist between actions.
 - The permission engine outside the model is authoritative. Never claim a command ran until its result appears in the transcript.
+
+# Built-in runtime tools
+${runtime.tools.map((tool) => `- ${tool.name} (${tool.command}): ${tool.purpose}`).join("\n")}
+- Git inspection is read-only; commits, branch changes, staging, pulls, pushes, and repository mutations require permission. Never commit or push unless explicitly requested.
+- curl GET/HEAD requests to stdout are read-only. Downloads to disk, uploads, request bodies, and mutating HTTP methods require permission. Never expose credentials or tokens.
 
 # Operating loop
 1. Determine the requested outcome and whether the supplied verified evidence already answers it.
@@ -188,6 +199,7 @@ function bridgeError(result) {
 
 export async function askModel({ goal, transcript, cwd, bridge, extensionPrompt = "" }) {
   const projectContext = transcript ? "Previously supplied; rely on verified paths in the transcript." : await buildProjectContext(cwd);
+  const transcriptContext = trimStart(transcript || "(none yet)", MAX_TRANSCRIPT_CHARS);
   const exactPaths = extractUserPaths(goal);
   const pathContext = exactPaths.length
     ? `Exact paths from the user's task (copy character-for-character; keep sources and destinations distinct):\n${exactPaths.map((path) => `- ${path}`).join("\n")}\n\n`
@@ -198,13 +210,15 @@ User's task:
 ${goal}
 
 ${pathContext}Actions and results so far:
-${trimStart(transcript || "(none yet)", MAX_TRANSCRIPT_CHARS)}
+${transcriptContext}
 
 Choose the next single action.`;
 
+  const systemPrompt = buildSystemPrompt({ cwd, extensionPrompt });
+
   const input = JSON.stringify({
     prompt,
-    system_prompt: buildSystemPrompt({ cwd, extensionPrompt }),
+    system_prompt: systemPrompt,
     schema: ACTION_SCHEMA,
   });
   const result = await runProcess(bridge, [], {
@@ -215,7 +229,28 @@ Choose the next single action.`;
 
   const response = JSON.parse(result.stdout);
   const action = response.structured ?? parseModelJson(response.content);
-  return validateAction(action);
+  return {
+    ...validateAction(action),
+    modelUsage: normalizeModelUsage(response),
+    diagnostics: {
+      systemPromptChars: systemPrompt.length,
+      taskPromptChars: prompt.length,
+      projectContextChars: projectContext.length,
+      transcriptChars: transcript ? transcriptContext.length : 0,
+      responseFormat: response.structured ? "structured" : "text fallback",
+    },
+  };
+}
+
+export function normalizeModelUsage(response) {
+  const number = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
+  return {
+    inputTokens: number(response.prompt_tokens),
+    outputTokens: number(response.completion_tokens),
+    contextWindow: number(response.context_size),
+    truncated: response.truncated === true,
+    finishReason: typeof response.finish_reason === "string" ? response.finish_reason : null,
+  };
 }
 
 export function extractUserPaths(text) {
@@ -292,7 +327,8 @@ export function normalizePublicPlan(plan, fallback = "") {
 }
 
 export function classifyCommandImpact(command) {
-  const value = command.trim().toLowerCase();
+  const original = command.trim();
+  const value = original.toLowerCase();
   if (/\b(sudo|launchctl|systemsetup|diskutil|csrutil|spctl)\b|\bdefaults\s+write\b/.test(value)) {
     return "system-change";
   }
@@ -302,21 +338,46 @@ export function classifyCommandImpact(command) {
     if (classifyCommandImpact(match[1] ?? match[2]) !== "read-only") return "writes-files";
   }
 
-  const segments = value.split(/&&|\|\||(?<!\\);|\n|\|/).map((part) => part.trim()).filter(Boolean);
+  const segments = original.split(/&&|\|\||(?<!\\);|\n|\|/).map((part) => part.trim()).filter(Boolean);
   const writeStart = /^(rm|mv|cp|mkdir|rmdir|touch|chmod|chown|ln|install|tee|truncate|npm|pnpm|yarn|brew)\b|^git\s+(add|commit|reset|checkout|switch|clean|rebase|merge)\b/;
-  const readOnlyStart = /^(ls|rg|grep|cat|sed\s+-n|head|tail|pwd|stat|file|wc|du|df|shasum|sha256sum|md5|tree|sort|uniq|cut|awk|printf|echo|git\s+(status|log|diff|show|branch))\b/;
+  const readOnlyStart = /^(ls|rg|grep|cat|sed\s+-n|head|tail|pwd|stat|file|wc|du|df|shasum|sha256sum|md5|tree|sort|uniq|cut|awk|printf|echo)\b/;
 
   for (const segment of segments) {
-    if (writeStart.test(segment)) return "writes-files";
-    if (segment.startsWith("find ") || segment === "find") {
-      if (/\s-delete\b/.test(segment)) return "writes-files";
-      const exec = segment.match(/-exec\s+([^\s]+)/);
+    const lowerSegment = segment.toLowerCase();
+    if (writeStart.test(lowerSegment)) return "writes-files";
+    if (lowerSegment === "git" || lowerSegment.startsWith("git ")) {
+      if (isReadOnlyGit(lowerSegment)) continue;
+      return "writes-files";
+    }
+    if (lowerSegment === "curl" || lowerSegment.startsWith("curl ")) {
+      if (isReadOnlyCurl(segment)) continue;
+      return "writes-files";
+    }
+    if (lowerSegment.startsWith("find ") || lowerSegment === "find") {
+      if (/\s-delete\b/.test(lowerSegment)) return "writes-files";
+      const exec = lowerSegment.match(/-exec\s+([^\s]+)/);
       if (exec && !/^(shasum|sha256sum|md5|file|stat|cat|wc)$/.test(exec[1])) return "writes-files";
       continue;
     }
-    if (!readOnlyStart.test(segment)) return "writes-files";
+    if (!readOnlyStart.test(lowerSegment)) return "writes-files";
   }
   return segments.length > 0 ? "read-only" : "writes-files";
+}
+
+function isReadOnlyGit(command) {
+  if (/^git\s+(status|log|diff|show|grep|blame|shortlog|rev-parse|ls-files|ls-tree|cat-file|describe)(?:\s|$)/.test(command)) return true;
+  if (/^git\s+branch\s*$/.test(command) || /^git\s+branch\s+(?:--list|-l|--show-current)(?:\s|$)/.test(command)) return true;
+  if (/^git\s+remote\s*$/.test(command) || /^git\s+remote\s+(-v|show|get-url)(?:\s|$)/.test(command)) return true;
+  if (/^git\s+tag\s*$/.test(command) || /^git\s+tag\s+(?:--list|-l)(?:\s|$)/.test(command)) return true;
+  return /^git\s+config\s+(?:--get|--get-all|--list|-l|--show-origin)(?:\s|$)/.test(command);
+}
+
+function isReadOnlyCurl(command) {
+  const mutatingLongOption = /(?:^|\s)--(?:output|remote-name|output-dir|upload-file|data(?:-ascii|-binary|-raw|-urlencode)?|json|form(?:-string)?|cookie-jar|dump-header|etag-save)(?:[=\s]|$)/i;
+  if (mutatingLongOption.test(command)) return false;
+  if (/(?:^|\s)-(?:[A-Za-z]*[oOTdFcD])(?:[A-Za-z]*)(?:\s|$)/.test(command)) return false;
+  const method = command.match(/(?:^|\s)(?:-X\s+|--request(?:=|\s+))([^\s]+)/i)?.[1]?.toUpperCase();
+  return !method || method === "GET" || method === "HEAD";
 }
 
 export async function runCommand(command, { cwd, timeoutMs = 120_000, onOutput } = {}) {
